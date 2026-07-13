@@ -1,4 +1,4 @@
-# Terraform state — never commit!
+# Terraform state — never commit
 *.tfstate
 *.tfstate.backup
 *.tfstate.lock.info
