@@ -1,0 +1,194 @@
+version: 2.1
+
+# ═══════════════════════════════════════════════════════════════
+# FreightFox — CircleCI Terraform Pipeline (Shared VPC Model)
+#
+# DEPLOYMENT ORDER (IMPORTANT!):
+# 1. terraform/bootstrap  → run ONCE manually (state buckets)
+# 2. environments/shared  → org IAM, Cloudflare
+# 3. environments/host-dev     → host VPC + subnets for dev
+# 4. environments/host-staging → host VPC + subnets for staging
+# 5. environments/host-prod    → host VPC + subnets for prod
+# 6. environments/tms-dev      → service project (uses host-dev VPC)
+# 7. environments/vms-dev      → service project (uses host-dev VPC)
+# 8. environments/analytics-dev → service project (uses host-dev VPC)
+# ... and so on for staging + prod
+#
+# BRANCH STRATEGY:
+# feature/* → validate + plan only (safe)
+# main      → validate + plan + approve + apply
+# destroy   → approve + destroy (emergency only)
+# ═══════════════════════════════════════════════════════════════
+
+parameters:
+  environment:
+    type: enum
+    enum:
+      - host-dev
+      - host-staging
+      - host-prod
+      - tms-dev
+      - tms-staging
+      - tms-prod
+      - vms-dev
+      - vms-staging
+      - vms-prod
+      - analytics-dev
+      - analytics-prod
+      - shared
+    default: "host-dev"
+
+executors:
+  tf-executor:
+    docker:
+      - image: hashicorp/terraform:1.9.0
+    working_directory: ~/project
+    environment:
+      TF_CLI_ARGS: "-no-color"
+      GOOGLE_APPLICATION_CREDENTIALS: /tmp/gcp-key.json
+
+commands:
+  setup-gcp:
+    steps:
+      - run:
+          name: Setup GCP credentials
+          command: |
+            echo "$GOOGLE_CREDENTIALS" > /tmp/gcp-key.json
+            echo "✅ GCP credentials configured"
+
+  tf-init:
+    parameters:
+      env:
+        type: string
+    steps:
+      - run:
+          name: Terraform Init — << parameters.env >>
+          command: |
+            cd environments/<< parameters.env >>
+            terraform init -input=false
+
+jobs:
+  validate:
+    executor: tf-executor
+    steps:
+      - checkout
+      - setup-gcp
+      - tf-init:
+          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Format Check
+          command: terraform fmt -check -recursive
+      - run:
+          name: Terraform Validate
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform validate
+            echo "✅ Validate passed for << pipeline.parameters.environment >>"
+
+  plan:
+    executor: tf-executor
+    steps:
+      - checkout
+      - setup-gcp
+      - tf-init:
+          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Plan — << pipeline.parameters.environment >>
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform plan \
+              -var-file="terraform.tfvars" \
+              -out=tfplan \
+              -input=false
+      - run:
+          name: Show Plan Summary
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform show -no-color tfplan
+      - persist_to_workspace:
+          root: .
+          paths:
+            - environments/<< pipeline.parameters.environment >>/tfplan
+            - environments/<< pipeline.parameters.environment >>/.terraform
+            - environments/<< pipeline.parameters.environment >>/.terraform.lock.hcl
+
+  apply:
+    executor: tf-executor
+    steps:
+      - checkout
+      - setup-gcp
+      - attach_workspace:
+          at: .
+      - run:
+          name: Terraform Apply — << pipeline.parameters.environment >>
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform apply -auto-approve -input=false tfplan
+            echo "✅ Apply complete for << pipeline.parameters.environment >>"
+      - run:
+          name: Show Outputs
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform output
+
+  destroy:
+    executor: tf-executor
+    steps:
+      - checkout
+      - setup-gcp
+      - tf-init:
+          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Destroy — << pipeline.parameters.environment >>
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform destroy \
+              -var-file="terraform.tfvars" \
+              -auto-approve \
+              -input=false
+
+workflows:
+  feature-branch:
+    when:
+      and:
+        - not:
+            equal: [main, << pipeline.git.branch >>]
+        - not:
+            equal: [destroy, << pipeline.git.branch >>]
+    jobs:
+      - validate:
+          context: gcp-credentials
+      - plan:
+          context: gcp-credentials
+          requires:
+            - validate
+
+  main-branch:
+    when:
+      equal: [main, << pipeline.git.branch >>]
+    jobs:
+      - validate:
+          context: gcp-credentials
+      - plan:
+          context: gcp-credentials
+          requires:
+            - validate
+      - hold-for-approval:
+          type: approval
+          requires:
+            - plan
+      - apply:
+          context: gcp-credentials
+          requires:
+            - hold-for-approval
+
+  destroy-infra:
+    when:
+      equal: [destroy, << pipeline.git.branch >>]
+    jobs:
+      - hold-for-destroy:
+          type: approval
+      - destroy:
+          context: gcp-credentials
+          requires:
+            - hold-for-destroy
