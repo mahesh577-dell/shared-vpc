@@ -1,4 +1,4 @@
-variable "project_id" {
+/*variable "project_id" {
   description = "GCP Project ID"
   type        = string
 }
@@ -16,4 +16,4 @@ variable "vpc_cidr" {
 variable "name_prefix" {
   description = "Prefix for firewall rule names"
   type        = string
-}
+}*/
