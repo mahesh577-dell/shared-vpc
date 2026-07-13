@@ -1,4 +1,4 @@
-output "firewall_rules" {
+/*output "firewall_rules" {
   value = [
     google_compute_firewall.allow_internal.name,
     google_compute_firewall.allow_health_check.name,
@@ -7,4 +7,4 @@ output "firewall_rules" {
     google_compute_firewall.deny_all_ingress.name,
     google_compute_firewall.allow_all_egress.name,
   ]
-}
+}*/
