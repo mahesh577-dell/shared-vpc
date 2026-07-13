@@ -18,11 +18,3 @@ output "subnet_cidrs" {
 output "shared_vpc_service_projects" {
   value = module.shared_vpc.service_projects
 }
-
-output "cloud_router" {
-  value = module.router.router_name
-}
-
-output "firewall_rules" {
-  value = module.firewall.firewall_rules
-}
