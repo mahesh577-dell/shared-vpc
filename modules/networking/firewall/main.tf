@@ -68,12 +68,12 @@ resource "google_compute_firewall" "deny_all_ingress" {
 }
 
 resource "google_compute_firewall" "allow_all_egress" {
-  project            = var.project_id
-  name               = "${var.name_prefix}-allow-all-egress"
-  network            = var.vpc_name
-  description        = "Allow all outbound traffic"
-  priority           = 1000
-  direction          = "EGRESS"
+  project     = var.project_id
+  name        = "${var.name_prefix}-allow-all-egress"
+  network     = var.vpc_name
+  description = "Allow all outbound traffic"
+  priority    = 1000
+  direction   = "EGRESS"
   allow { protocol = "all" }
   destination_ranges = ["0.0.0.0/0"]
 }
