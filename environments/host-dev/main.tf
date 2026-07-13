@@ -1,4 +1,4 @@
-# ---------------------------------------------------------------
+ï»¿# ---------------------------------------------------------------
 # ENVIRONMENT: host-dev
 #
 # PURPOSE:
@@ -18,7 +18,7 @@ module "vpc" {
   source      = "../../modules/networking/vpc"
   project_id  = var.host_project_id
   vpc_name    = "host-dev-vpc"
-  description = "FreightFox DEV Shared VPC — tms-dev, vms-dev, analytics-dev"
+  description = "FreightFox DEV Shared VPC for tms-dev, vms-dev, analytics-dev"
 }
 
 # -- 2. Subnets ------------------------------------------------
@@ -32,12 +32,12 @@ module "subnets" {
   subnets = {
     "tms-dev-public" = {
       cidr                     = "10.60.0.0/22"
-      description              = "TMS DEV Public — Load Balancer / Bastion"
+      description              = "TMS DEV Public â€” Load Balancer / Bastion"
       private_ip_google_access = false
     }
     "tms-dev-private" = {
       cidr                     = "10.60.4.0/22"
-      description              = "TMS DEV Private — GKE Nodes / GCE VMs"
+      description              = "TMS DEV Private â€” GKE Nodes / GCE VMs"
       private_ip_google_access = true
       secondary_ranges = [
         {
@@ -52,17 +52,17 @@ module "subnets" {
     }
     "tms-dev-data" = {
       cidr                     = "10.60.8.0/22"
-      description              = "TMS DEV Data — Cloud SQL private IP"
+      description              = "TMS DEV Data â€” Cloud SQL private IP"
       private_ip_google_access = true
     }
     "vms-dev-public" = {
       cidr                     = "10.60.12.0/22"
-      description              = "VMS DEV Public — Load Balancer / Bastion"
+      description              = "VMS DEV Public â€” Load Balancer / Bastion"
       private_ip_google_access = false
     }
     "vms-dev-private" = {
       cidr                     = "10.60.16.0/22"
-      description              = "VMS DEV Private — GKE Nodes / GCE VMs"
+      description              = "VMS DEV Private â€” GKE Nodes / GCE VMs"
       private_ip_google_access = true
       secondary_ranges = [
         {
@@ -77,17 +77,17 @@ module "subnets" {
     }
     "vms-dev-data" = {
       cidr                     = "10.60.20.0/22"
-      description              = "VMS DEV Data — Cloud SQL private IP"
+      description              = "VMS DEV Data â€” Cloud SQL private IP"
       private_ip_google_access = true
     }
     "analytics-dev-private" = {
       cidr                     = "10.60.24.0/22"
-      description              = "Analytics DEV Private — Dataflow / Datastream workers"
+      description              = "Analytics DEV Private â€” Dataflow / Datastream workers"
       private_ip_google_access = true
     }
     "analytics-dev-data" = {
       cidr                     = "10.60.28.0/22"
-      description              = "Analytics DEV Data — BigQuery / Datastream connections"
+      description              = "Analytics DEV Data â€” BigQuery / Datastream connections"
       private_ip_google_access = true
     }
   }
