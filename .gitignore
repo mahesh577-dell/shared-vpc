@@ -7,7 +7,7 @@
 .terraform/
 .terraform.lock.hcl
 
-# Secret variable files
+# Secret variable files-1
 *.tfvars
 *.tfvars.json
 
