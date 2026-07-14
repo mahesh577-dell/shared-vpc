@@ -3,7 +3,7 @@
 # AWS EQUIVALENT: Security Groups + NACLs
 # ═══════════════════════════════════════════════════════════════
 
-/*resource "google_compute_firewall" "allow_internal" {
+resource "google_compute_firewall" "allow_internal" {
   project     = var.project_id
   name        = "${var.name_prefix}-allow-internal"
   network     = var.vpc_name
@@ -76,4 +76,4 @@ resource "google_compute_firewall" "allow_all_egress" {
   direction   = "EGRESS"
   allow { protocol = "all" }
   destination_ranges = ["0.0.0.0/0"]
-}*/
+}
