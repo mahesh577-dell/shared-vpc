@@ -1,7 +1,7 @@
 # ═══════════════════════════════════════════════════════════════
 # ENVIRONMENT: host-dev
 ##
-# PURPOSE:
+# PURPOSE:123
 # Creates the Shared VPC infrastructure for ALL dev environments
 # tms-dev, vms-dev, analytics-dev all share this VPC
 #
