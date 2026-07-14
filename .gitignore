@@ -1,4 +1,4 @@
-# Terraform state — never commit
+# Terraform state — never commit!
 *.tfstate
 *.tfstate.backup
 *.tfstate.lock.info
@@ -7,7 +7,7 @@
 .terraform/
 .terraform.lock.hcl
 
-# Secret variable files-1
+# Secret variable files
 *.tfvars
 *.tfvars.json
 
