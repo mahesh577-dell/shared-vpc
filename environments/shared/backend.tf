@@ -1,8 +1,8 @@
 terraform {
   backend "gcs" {
-    # State bucket lives IN host-staging project
+    # State bucket lives IN shared project
     # Created by terraform/bootstrap
-    bucket = "freightfox-tfstate-host-staging"
+    bucket = "freightfox-tfstate-shared"
     prefix = "terraform/state"
   }
 }

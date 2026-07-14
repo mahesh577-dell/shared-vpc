@@ -22,3 +22,6 @@ circleci-key.json
 # OS files
 .DS_Store
 Thumbs.db
+
+# Bootstrap local states
+terraform/bootstrap/states/

@@ -3,21 +3,24 @@ version: 2.1
 # ═══════════════════════════════════════════════════════════════
 # FreightFox — CircleCI Terraform Pipeline (Shared VPC Model)
 #
-# DEPLOYMENT ORDER (IMPORTANT!):
-# 1. terraform/bootstrap  → run ONCE manually (state buckets)
-# 2. environments/shared  → org IAM, Cloudflare
-# 3. environments/host-dev     → host VPC + subnets for dev
-# 4. environments/host-staging → host VPC + subnets for staging
-# 5. environments/host-prod    → host VPC + subnets for prod
-# 6. environments/tms-dev      → service project (uses host-dev VPC)
-# 7. environments/vms-dev      → service project (uses host-dev VPC)
-# 8. environments/analytics-dev → service project (uses host-dev VPC)
-# ... and so on for staging + prod
+# INDIVIDUAL SA PER PROJECT:
+# Each environment has its OWN SA + OWN CircleCI context:
+#   host-dev  → context: gcp-host-dev  → SA: circleci-tf-host-dev
+#   tms-dev   → context: gcp-tms-dev   → SA: circleci-tf-tms-dev
+#   vms-dev   → context: gcp-vms-dev   → SA: circleci-tf-vms-dev
+#   ... (11 contexts total)
+# Each context has ONE variable: GOOGLE_CREDENTIALS = SA JSON key
+#
+# TWO PIPELINE TYPES:
+# 1. ENVIRONMENT DEPLOY (default):
+#    Trigger Pipeline → environment = host-dev
+# 2. BOOTSTRAP (per project):
+#    Trigger Pipeline → run_bootstrap = true, bootstrap_env = tms-dev
+#    NOTE: bootstrap uses gcp-bootstrap context (org-admin key)
+#          because SAs don't exist yet during bootstrap!
 #
 # BRANCH STRATEGY:
-# feature/* → validate + plan only (safe)
-# main      → validate + plan + approve + apply
-# destroy   → approve + destroy (emergency only)
+# feature/* → validate + plan | main → plan + approve + apply
 # ═══════════════════════════════════════════════════════════════
 
 parameters:
@@ -38,6 +41,26 @@ parameters:
       - shared
     default: "host-dev"
 
+  run_bootstrap:
+    type: boolean
+    default: false
+
+  bootstrap_env:
+    type: enum
+    enum:
+      - host-dev
+      - host-staging
+      - host-prod
+      - tms-dev
+      - tms-staging
+      - tms-prod
+      - vms-dev
+      - vms-staging
+      - vms-prod
+      - analytics-dev
+      - analytics-prod
+    default: "host-dev"
+
 executors:
   tf-executor:
     docker:
@@ -56,25 +79,53 @@ commands:
             echo "$GOOGLE_CREDENTIALS" > /tmp/gcp-key.json
             echo "✅ GCP credentials configured"
 
-  tf-init:
-    parameters:
-      env:
-        type: string
-    steps:
-      - run:
-          name: Terraform Init — << parameters.env >>
-          command: |
-            cd environments/<< parameters.env >>
-            terraform init -input=false
-
 jobs:
+  # ── Bootstrap — uses org-admin key (gcp-bootstrap context) ──
+  bootstrap:
+    executor: tf-executor
+    steps:
+      - checkout
+      - setup-gcp
+      - run:
+          name: "Bootstrap Plan — << pipeline.parameters.bootstrap_env >>"
+          command: |
+            cd terraform/bootstrap
+            mkdir -p states
+            terraform init -input=false
+            terraform plan \
+              -state="states/<< pipeline.parameters.bootstrap_env >>.tfstate" \
+              -var-file="projects/<< pipeline.parameters.bootstrap_env >>.tfvars" \
+              -input=false
+      - run:
+          name: "Bootstrap Apply — << pipeline.parameters.bootstrap_env >>"
+          command: |
+            cd terraform/bootstrap
+            terraform apply \
+              -state="states/<< pipeline.parameters.bootstrap_env >>.tfstate" \
+              -var-file="projects/<< pipeline.parameters.bootstrap_env >>.tfvars" \
+              -input=false \
+              -auto-approve
+      - run:
+          name: Show Outputs — SA email + context name
+          command: |
+            cd terraform/bootstrap
+            terraform output -state="states/<< pipeline.parameters.bootstrap_env >>.tfstate"
+            echo ""
+            echo "NEXT STEPS:"
+            echo "1. Create JSON key for the SA shown above"
+            echo "2. Create CircleCI context: gcp-<< pipeline.parameters.bootstrap_env >>"
+            echo "3. Add GOOGLE_CREDENTIALS variable with the key"
+
   validate:
     executor: tf-executor
     steps:
       - checkout
       - setup-gcp
-      - tf-init:
-          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Init
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform init -input=false
       - run:
           name: Terraform Format Check
           command: terraform fmt -check -recursive
@@ -83,15 +134,17 @@ jobs:
           command: |
             cd environments/<< pipeline.parameters.environment >>
             terraform validate
-            echo "✅ Validate passed for << pipeline.parameters.environment >>"
 
   plan:
     executor: tf-executor
     steps:
       - checkout
       - setup-gcp
-      - tf-init:
-          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Init
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform init -input=false
       - run:
           name: Terraform Plan — << pipeline.parameters.environment >>
           command: |
@@ -124,7 +177,6 @@ jobs:
           command: |
             cd environments/<< pipeline.parameters.environment >>
             terraform apply -auto-approve -input=false tfplan
-            echo "✅ Apply complete for << pipeline.parameters.environment >>"
       - run:
           name: Show Outputs
           command: |
@@ -136,8 +188,11 @@ jobs:
     steps:
       - checkout
       - setup-gcp
-      - tf-init:
-          env: << pipeline.parameters.environment >>
+      - run:
+          name: Terraform Init
+          command: |
+            cd environments/<< pipeline.parameters.environment >>
+            terraform init -input=false
       - run:
           name: Terraform Destroy — << pipeline.parameters.environment >>
           command: |
@@ -148,47 +203,302 @@ jobs:
               -input=false
 
 workflows:
-  feature-branch:
+  # ── Bootstrap — org-admin credentials (gcp-bootstrap) ────────
+  bootstrap-project:
+    when: << pipeline.parameters.run_bootstrap >>
+    jobs:
+      - hold-bootstrap:
+          type: approval
+      - bootstrap:
+          context: gcp-bootstrap
+          requires:
+            - hold-bootstrap
+
+  # ── HOST-DEV ─────────────────────────────────────────────────
+  host-dev:
     when:
       and:
-        - not:
-            equal: [main, << pipeline.git.branch >>]
-        - not:
-            equal: [destroy, << pipeline.git.branch >>]
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [host-dev, << pipeline.parameters.environment >>]
     jobs:
       - validate:
-          context: gcp-credentials
+          context: gcp-host-dev
       - plan:
-          context: gcp-credentials
-          requires:
-            - validate
-
-  main-branch:
-    when:
-      equal: [main, << pipeline.git.branch >>]
-    jobs:
-      - validate:
-          context: gcp-credentials
-      - plan:
-          context: gcp-credentials
-          requires:
-            - validate
+          context: gcp-host-dev
+          requires: [validate]
       - hold-for-approval:
           type: approval
-          requires:
-            - plan
+          requires: [plan]
+          filters:
+            branches:
+              only: main
       - apply:
-          context: gcp-credentials
-          requires:
-            - hold-for-approval
+          context: gcp-host-dev
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
 
+  # ── HOST-STAGING ─────────────────────────────────────────────
+  host-staging:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [host-staging, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-host-staging
+      - plan:
+          context: gcp-host-staging
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-host-staging
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── HOST-PROD ────────────────────────────────────────────────
+  host-prod:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [host-prod, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-host-prod
+      - plan:
+          context: gcp-host-prod
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-host-prod
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── TMS-DEV ──────────────────────────────────────────────────
+  tms-dev:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [tms-dev, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-tms-dev
+      - plan:
+          context: gcp-tms-dev
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-tms-dev
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── TMS-STAGING ──────────────────────────────────────────────
+  tms-staging:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [tms-staging, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-tms-staging
+      - plan:
+          context: gcp-tms-staging
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-tms-staging
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── TMS-PROD ─────────────────────────────────────────────────
+  tms-prod:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [tms-prod, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-tms-prod
+      - plan:
+          context: gcp-tms-prod
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-tms-prod
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── VMS-DEV ──────────────────────────────────────────────────
+  vms-dev:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [vms-dev, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-vms-dev
+      - plan:
+          context: gcp-vms-dev
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-vms-dev
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── VMS-STAGING ──────────────────────────────────────────────
+  vms-staging:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [vms-staging, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-vms-staging
+      - plan:
+          context: gcp-vms-staging
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-vms-staging
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── VMS-PROD ─────────────────────────────────────────────────
+  vms-prod:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [vms-prod, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-vms-prod
+      - plan:
+          context: gcp-vms-prod
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-vms-prod
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── ANALYTICS-DEV ────────────────────────────────────────────
+  analytics-dev:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [analytics-dev, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-analytics-dev
+      - plan:
+          context: gcp-analytics-dev
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-analytics-dev
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── ANALYTICS-PROD ───────────────────────────────────────────
+  analytics-prod:
+    when:
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [analytics-prod, << pipeline.parameters.environment >>]
+    jobs:
+      - validate:
+          context: gcp-analytics-prod
+      - plan:
+          context: gcp-analytics-prod
+          requires: [validate]
+      - hold-for-approval:
+          type: approval
+          requires: [plan]
+          filters:
+            branches:
+              only: main
+      - apply:
+          context: gcp-analytics-prod
+          requires: [hold-for-approval]
+          filters:
+            branches:
+              only: main
+
+  # ── Emergency destroy ────────────────────────────────────────
   destroy-infra:
     when:
-      equal: [destroy, << pipeline.git.branch >>]
+      and:
+        - not: << pipeline.parameters.run_bootstrap >>
+        - equal: [destroy, << pipeline.git.branch >>]
     jobs:
       - hold-for-destroy:
           type: approval
       - destroy:
-          context: gcp-credentials
+          context: gcp-<< pipeline.parameters.environment >>
           requires:
             - hold-for-destroy

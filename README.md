@@ -1,92 +1,114 @@
-# FreightFox — Terraform Infrastructure (GCP Shared VPC Model)
+# FreightFox — Terraform Infrastructure (GCP Shared VPC)
+
+## Design Decisions
+- **Shared VPC**: 3 host projects own VPCs; service projects consume subnets
+- **Individual SA per project**: 11 SAs — least privilege, 1 key leak = 1 project risk
+- **State bucket per project**: each project holds its own tfstate bucket
+- **APIs per project type**: host / service / analytics get different API sets
+- **Parameterized bootstrap**: run per project via script, CLI, or CircleCI
 
 ## Repository Structure
 
 ```
 freightfox-terraform/
-├── .circleci/config.yml          ← CircleCI pipeline
-├── .gitignore
-├── terraform/bootstrap/          ← Run ONCE manually
+├── .circleci/config.yml          ← 11 env workflows + bootstrap workflow
+├── terraform/bootstrap/          ← Parameterized per-project bootstrap
+│   ├── main.tf                   ← APIs + state bucket + dedicated SA
+│   ├── run_bootstrap.sh          ← ./run_bootstrap.sh tms-dev | all
+│   ├── projects/*.tfvars         ← 1 tfvars per project (11 files)
+│   └── states/                   ← local state per project (gitignored)
 ├── modules/
-│   ├── networking/
-│   │   ├── vpc/                  ← VPC (used by host projects)
-│   │   ├── subnet/               ← Subnets with GKE secondary ranges
-│   │   ├── firewall/             ← Firewall rules
-│   │   ├── shared-vpc/           ← Shared VPC host/service setup ← NEW!
-│   │   ├── cloud-router/         ← Cloud Router
-│   │   ├── nat/                  ← Cloud NAT
-│   │   ├── cloudflare-ztna/      ← PLACEHOLDER
-│   │   └── vpc-peering/          ← PLACEHOLDER
-│   ├── database/
-│   │   └── cloud-sql/            ← PostgreSQL 16
-│   ├── data-pipeline/
-│   │   ├── dataflow/             ← PLACEHOLDER
-│   │   ├── datastream/           ← PLACEHOLDER
-│   │   ├── bigquery/             ← PLACEHOLDER
-│   │   └── pubsub/               ← PLACEHOLDER
-│   └── security/
-│       ├── secret-manager/       ← Stores DB passwords
-│       ├── kms/                  ← PLACEHOLDER
-│       ├── iam/                  ← PLACEHOLDER
-│       └── cloud-armor/          ← PLACEHOLDER
+│   ├── networking/ (vpc, subnet, shared-vpc, firewall, cloud-router, nat)
+│   ├── database/cloud-sql/
+│   ├── data-pipeline/ (placeholders)
+│   └── security/ (secret-manager + placeholders)
 └── environments/
-    ├── shared/                   ← Org IAM, Cloudflare
-    ├── host-dev/                 ← ACTIVE: Shared VPC for dev ← NEW!
-    ├── host-staging/             ← Shared VPC for staging ← NEW!
-    ├── host-prod/                ← Shared VPC for prod ← NEW!
-    ├── tms-dev/                  ← ACTIVE: TMS DEV service project
-    ├── tms-staging/              ← placeholder
-    ├── tms-prod/                 ← placeholder
-    ├── vms-dev/                  ← placeholder
-    ├── vms-staging/              ← placeholder
-    ├── vms-prod/                 ← placeholder
-    ├── analytics-dev/            ← placeholder
-    └── analytics-prod/           ← placeholder (NO staging!)
+    ├── host-dev/                 ← ACTIVE: Shared VPC + 8 subnets
+    ├── tms-dev/                  ← ACTIVE: Cloud SQL + Secret Manager
+    ├── vms-dev/ analytics-dev/   ← placeholders (empty by request)
+    └── ... all other envs
 ```
 
-## Shared VPC Architecture
+## What Bootstrap Creates (per project)
+
+| Item | Example (tms-dev) |
+|---|---|
+| APIs enabled | compute, sqladmin, secretmanager... (by type) |
+| State bucket | freightfox-tfstate-tms-dev (in tms-dev project) |
+| Dedicated SA | circleci-tf-tms-dev@tms-dev-501607.iam... |
+| SA roles | editor + storage.admin on own project |
+| networkUser | on host project (service/analytics only) |
+
+## CircleCI Contexts — One Per Environment
+
+| Environment | Context | SA |
+|---|---|---|
+| host-dev | gcp-host-dev | circleci-tf-host-dev |
+| host-staging | gcp-host-staging | circleci-tf-host-staging |
+| host-prod | gcp-host-prod | circleci-tf-host-prod |
+| tms-dev | gcp-tms-dev | circleci-tf-tms-dev |
+| tms-staging | gcp-tms-staging | circleci-tf-tms-staging |
+| tms-prod | gcp-tms-prod | circleci-tf-tms-prod |
+| vms-dev | gcp-vms-dev | circleci-tf-vms-dev |
+| vms-staging | gcp-vms-staging | circleci-tf-vms-staging |
+| vms-prod | gcp-vms-prod | circleci-tf-vms-prod |
+| analytics-dev | gcp-analytics-dev | circleci-tf-analytics-dev |
+| analytics-prod | gcp-analytics-prod | circleci-tf-analytics-prod |
+| (bootstrap) | gcp-bootstrap | org-admin key (temporary) |
+
+Each context has ONE variable: `GOOGLE_CREDENTIALS` = SA JSON key
+
+## How to Bootstrap
+
+### Update project IDs first!
+Edit `terraform/bootstrap/projects/*.tfvars` — replace all XXXXX.
+
+### Option A — Helper script (local)
+```bash
+cd terraform/bootstrap
+./run_bootstrap.sh host-dev        # one project
+./run_bootstrap.sh all             # all 11 projects
+./run_bootstrap.sh tms-dev plan    # plan only
+```
+
+### Option B — Raw terraform (local)
+```bash
+cd terraform/bootstrap
+terraform init
+terraform apply \
+  -state="states/tms-dev.tfstate" \
+  -var-file="projects/tms-dev.tfvars"
+```
+
+### Option C — CircleCI (parameterized)
+```
+Trigger Pipeline →
+  run_bootstrap = true
+  bootstrap_env = tms-dev
+→ Approve → runs with gcp-bootstrap context
+```
+
+## Full Setup Flow
 
 ```
-host-dev-project (host)
-└── host-dev-vpc (10.60.0.0/16)
-    ├── tms-dev-public     10.60.0.0/22
-    ├── tms-dev-private    10.60.4.0/22  + pods/services secondary
-    ├── tms-dev-data       10.60.8.0/22
-    ├── vms-dev-public     10.60.12.0/22
-    ├── vms-dev-private    10.60.16.0/22 + pods/services secondary
-    ├── vms-dev-data       10.60.20.0/22
-    ├── analytics-dev-private 10.60.24.0/22
-    └── analytics-dev-data    10.60.28.0/22
-
-Service projects consume subnets from host:
-├── tms-dev-501607     → uses tms-dev-* subnets
-├── vms-dev-XXXXX      → uses vms-dev-* subnets
-└── analytics-dev-XXXXX → uses analytics-dev-* subnets
+1. Update projects/*.tfvars with real project IDs
+2. Bootstrap all 11 projects (any order — SAs are independent!)
+3. For each project:
+   → gcloud iam service-accounts keys create key.json \
+       --iam-account=circleci-tf-<env>@<project>.iam.gserviceaccount.com
+   → CircleCI: create context gcp-<env>
+   → Add GOOGLE_CREDENTIALS = key content
+4. Deploy environments:
+   → host-dev FIRST (creates shared VPC)
+   → then tms-dev, vms-dev, analytics-dev
+5. Repeat for staging + prod tiers
 ```
 
-## Deployment Order
+## Deploying an Environment
 
 ```
-Step 1: terraform/bootstrap (ONCE manually)
-Step 2: environments/shared
-Step 3: environments/host-dev
-Step 4: environments/host-staging
-Step 5: environments/host-prod
-Step 6: environments/tms-dev
-Step 7: environments/vms-dev
-Step 8: environments/analytics-dev
-...and so on
-```
-
-## CircleCI
-
-```
-Push to feature/* → validate + plan only
-Merge to main    → validate + plan + approve + apply
-
-To deploy host-dev:
-CircleCI → Trigger Pipeline → environment = host-dev
-
-To deploy tms-dev:
-CircleCI → Trigger Pipeline → environment = tms-dev
+CircleCI → Trigger Pipeline
+→ environment = host-dev
+→ Run pipeline
+→ validate → plan → approve → apply
 ```
